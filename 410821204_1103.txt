@@ -1,0 +1,102 @@
+#  need DAN.py  and csmapi.py
+import time, DAN, requests, random 
+import threading, sys    #
+import RPi.GPIO as GPIO  ##
+ledPin = 12  # 注意這程式用實體編號 -- mode 用 GPIO.BOARD
+ledPin2 = 32
+btnPin = 16  #實體編號 16 的腳位，其 BCM 編號為 23
+
+
+GPIO.setmode(GPIO.BOARD)   # Use physical pin numbering
+GPIO.setup(ledPin, GPIO.OUT, initial=GPIO.LOW)  # 初始關燈
+GPIO.setup(ledPin2, GPIO.OUT, initial=GPIO.LOW)  # 初始關燈
+#GPIO.setup(ledLocal, GPIO.OUT, initial=GPIO.LOW)  # Local 用的 LED
+GPIO.setup(btnPin, GPIO.IN)
+
+ServerURL = 'https://demo.iottalk.tw' #with SSL secure connection
+
+Reg_addr = None #if None, Reg_addr = MAC address
+
+mac_addr = 'CD8677D49' + str( random.randint(100,999 ) ) # for easy to modify;;  the mac_addr in DAN.py is NOT used
+# Copy DAI.py to DAI2.py and then modify the above mac_addr, then you can have two dummy devices
+Reg_addr = mac_addr   # Otherwise, the mac addr generated in DAN.py will always be the same !
+
+DAN.profile['dm_name']='Dummy_Device'   # you can change this but should also add the DM in server
+DAN.profile['df_list']=['Dummy_Sensor', 'Dummy_Control']
+DAN.profile['d_name']= '1203_02' # None for autoNaming
+DAN.device_registration_with_retry(ServerURL, Reg_addr)
+
+gotInput=False
+allDead=False
+myState = 0   # 記住按鈕的狀態 
+
+#thread 執行緒改為檢查按鈕
+def doRead( ):
+    global gotInput, theInput, allDead   # 
+    global myState    ### 按鈕狀態
+    while True:
+        while gotInput:   # 主程式還沒拿到回傳值
+           time.sleep(0.1)
+           continue  # go back to while 一直等到主程式拿走
+        try:
+           time.sleep(0.05)
+           if GPIO.input(btnPin) == GPIO.HIGH:    # 按了按鈕
+              time.sleep(0.15)  # simple Debounce
+              myState = 1 - myState     # Toggle 
+              gotInput=True   # 通知主程式 thread
+              time.sleep(0.25)   #設定不立即檢查按鈕(怕一直按到)
+        except Exception:
+           allDead = True  # 通知主程式 thread說我沒吃到值
+           print("\n\nDeregister " + DAN.profile['d_name'] + " !!!\n",  flush=True)
+           DAN.deregister()
+           sys.stdout = sys.__stdout__
+           print(" Thread say Bye bye ---------------", flush=True)
+           sys.exit( );   ## break  # raise   #  ?
+        ###### 
+
+#creat a thread to do Input data from keyboard, by tsaiwn@cs.nctu.edu.tw
+threadx = threading.Thread(target=doRead)
+threadx.daemon = True
+threadx.start()
+
+while True:
+    try:
+    #Pull data from a device feature called "Dummy_Control"
+        value1=DAN.pull('Dummy_Control')
+        if value1 != None:     #  有拉到資料 ! 
+            ggg = value1[0]   # 取出資料
+            if  ggg ==  0:
+                GPIO.output(ledPin, GPIO.LOW)   # 關燈
+                GPIO.output(ledPin2, GPIO.HIGH)
+            else:
+                GPIO.output(ledPin, GPIO.HIGH)   ##  開燈
+                GPIO.output(ledPin2, GPIO.LOW)
+    #Push data to a device feature called "Dummy_Sensor" 
+        if gotInput:    ### 確定已經有資料要送去 IoTtalk Server 
+           value2=float( myState )   # 丟實數以後比較有彈性 
+           gotInput=False   # so that you can input again 
+           if(allDead): break;
+           DAN.push ('Dummy_Sensor', value2,  value2)  
+
+    except KeyboardInterrupt:
+        break;
+    except Exception as e:
+        print(e)
+        if str(e).find('mac_addr not found:') != -1:
+            print('Reg_addr is not found. Try to re-register...')
+            DAN.device_registration_with_retry(ServerURL, Reg_addr)
+        else:
+            print('Connection failed due to unknow reasons.')
+            time.sleep(1)    
+    try:
+       time.sleep(0.25)
+    except KeyboardInterrupt:
+       break
+time.sleep(0.5)
+try: 
+   DAN.deregister()
+except Exception as e:
+   print("===")
+GPIO.cleanup() 
+print("Bye ! --------------", flush=True)
+sys.exit( );   
